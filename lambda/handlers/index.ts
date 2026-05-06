@@ -48,6 +48,27 @@ function httpCheck(url: string): Promise<void> {
   });
 }
 
+// Verifies Unifi redirects to the login page, not the setup wizard
+function checkNotSetupWizard(url: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const req = https.get(url, { rejectUnauthorized: false, timeout: 10000 }, (res) => {
+      const location = res.headers.location ?? '';
+      if (location.includes('/manage/account/login')) {
+        resolve();
+      } else if (location.includes('/setup') || location.includes('/wizard')) {
+        reject(new HealthCheckFailed(`Unifi is in setup wizard state (redirect: ${location}) — restore may not have applied`));
+      } else {
+        resolve();
+      }
+    });
+    req.on('error', (e) => reject(new HealthCheckFailed(`Connection failed to ${url}: ${e.message}`)));
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new HealthCheckFailed(`Timeout connecting to ${url}`));
+    });
+  });
+}
+
 // Checks EC2 system/instance status (2/2) and Unifi ports
 export async function checkHealth(event: { instanceId: string }): Promise<{ healthy: boolean }> {
   const { instanceId } = event;
@@ -71,6 +92,7 @@ export async function checkHealth(event: { instanceId: string }): Promise<{ heal
 
   await httpCheck(`http://${publicIp}:8080/inform`);
   await httpCheck(`https://${publicIp}:8443`);
+  await checkNotSetupWizard(`https://${publicIp}:8443`);
 
   return { healthy: true };
 }
