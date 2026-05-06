@@ -245,11 +245,10 @@ fi
 
 # ── Cron jobs ─────────────────────────────────────────────────────────────────
 # Hourly: sync Unifi auto-backups to S3
-cat > /etc/cron.hourly/unifi-backup-sync << 'CRON'
+cat > /etc/cron.hourly/unifi-backup-sync << CRON
 #!/bin/bash
 aws s3 sync /opt/unifi/config/data/backup/autobackup/ \
   "s3://${BACKUP_BUCKET}/backups/" \
-  --region "${REGION}" \
   --exclude "*" --include "*.unf" \
   --delete
 CRON
