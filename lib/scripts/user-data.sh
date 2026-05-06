@@ -25,9 +25,11 @@ chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 pip3 install certbot certbot-dns-route53
 
 # Restore cached cert from S3 first (avoids Let's Encrypt rate limits on instance rotation)
+mkdir -p /etc/letsencrypt
 aws s3 sync "s3://${BACKUP_BUCKET}/letsencrypt/" /etc/letsencrypt/ --exact-timestamps 2>/dev/null || true
 
-if certbot certificates 2>/dev/null | grep -q "VALID"; then
+CERT_FILE="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
+if [ -f "${CERT_FILE}" ] && openssl x509 -checkend 86400 -noout -in "${CERT_FILE}" 2>/dev/null; then
   echo "Valid certificate restored from S3 — skipping certbot request"
 else
   echo "No valid certificate in S3 — requesting new certificate from Let's Encrypt"
