@@ -7,6 +7,7 @@ ADMIN_EMAIL="${ADMIN_EMAIL}"
 BACKUP_BUCKET="${BACKUP_BUCKET}"
 REGION="${REGION}"
 MONGO_SECRET_ARN="${MONGO_SECRET_ARN}"
+API_KEY_SECRET_ARN="${API_KEY_SECRET_ARN}"
 
 # ── System setup ─────────────────────────────────────────────────────────────
 dnf update -y
@@ -248,6 +249,23 @@ if [ -f /opt/unifi/backup/restore.unf ]; then
             echo "Still restarting... attempt $i/30"
             sleep 10
           done
+
+          # Force all devices to re-provision immediately so they come online faster
+          echo "Force-provisioning devices across all sites..."
+          API_KEY=$(aws secretsmanager get-secret-value --secret-id "${API_KEY_SECRET_ARN}" --query 'SecretString' --output text 2>/dev/null || echo "")
+          if [ -n "${API_KEY}" ]; then
+            SITE_NAMES=$(python3 -c "import json; d=json.load(open('/tmp/upload_response.txt')); print(' '.join([s['name'] for s in d['data'][0]['sites']]))" 2>/dev/null || echo "")
+            for SITE in ${SITE_NAMES}; do
+              PROVISION_HTTP=$(curl -sk -X POST "https://localhost:8443/api/s/${SITE}/cmd/devmgr" \
+                -H "X-API-KEY: ${API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d '{"cmd":"force-provision"}' \
+                -w "%{http_code}" -o /dev/null 2>/dev/null || echo "000")
+              echo "Force-provision site ${SITE} — HTTP: ${PROVISION_HTTP}"
+            done
+          else
+            echo "WARNING: Could not retrieve API key — skipping force-provision"
+          fi
         else
           echo "WARNING: Restore trigger failed — instance will start fresh"
         fi

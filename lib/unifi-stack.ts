@@ -59,6 +59,9 @@ export class UnifiStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
+    // ── Unifi API key (pre-created in Secrets Manager) ────────────────────────
+    const apiKeySecret = secretsmanager.Secret.fromSecretNameV2(this, 'UnifiApiKey', 'unifi/api-key');
+
     // ── SSM parameters for rotation state ────────────────────────────────────
     const currentInstanceParam = new ssm.StringParameter(this, 'CurrentInstanceId', {
       parameterName: '/unifi/current-instance-id',
@@ -76,6 +79,7 @@ export class UnifiStack extends cdk.Stack {
 
     backupBucket.grantReadWrite(instanceRole);
     mongoSecret.grantRead(instanceRole);
+    apiKeySecret.grantRead(instanceRole);
 
     // Route 53 permissions for Certbot DNS-01 challenge
     instanceRole.addToPolicy(new iam.PolicyStatement({
@@ -136,7 +140,8 @@ export class UnifiStack extends cdk.Stack {
       .replace(/\$\{ADMIN_EMAIL\}/g, adminEmail)
       .replace(/\$\{BACKUP_BUCKET\}/g, backupBucket.bucketName)
       .replace(/\$\{REGION\}/g, region)
-      .replace(/\$\{MONGO_SECRET_ARN\}/g, mongoSecret.secretArn);
+      .replace(/\$\{MONGO_SECRET_ARN\}/g, mongoSecret.secretArn)
+      .replace(/\$\{API_KEY_SECRET_ARN\}/g, apiKeySecret.secretArn);
 
     const userData = ec2.UserData.forLinux();
     userData.addCommands(renderedUserData);
