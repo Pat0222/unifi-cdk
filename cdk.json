@@ -44,15 +44,6 @@
     "@aws-cdk/aws-rds:auroraClusterChangeScopeOfInstanceParameterGroupWithEachParameters": true,
     "@aws-cdk/aws-appsync:useArnForSourceApiAssociationIdentifier": true,
     "@aws-cdk/aws-rds:preventRenderingDeprecatedCredentials": true,
-    "@aws-cdk/aws-codepipeline-actions:useNewDefaultBranchForCodeCommitSource": true,
-    "eipAllocationId": "YOUR_EIP_ALLOCATION_ID",
-    "hostedZoneId": "YOUR_ROUTE53_HOSTED_ZONE_ID",
-    "existingInstanceId": "YOUR_EXISTING_INSTANCE_ID",
-    "instanceType": "t3.small",
-    "region": "us-east-1",
-    "domain": "YOUR_DOMAIN",
-    "adminEmail": "YOUR_EMAIL",
-    "vpcId": "YOUR_VPC_ID",
-    "eipPublicIp": "YOUR_EIP_PUBLIC_IP"
+    "@aws-cdk/aws-codepipeline-actions:useNewDefaultBranchForCodeCommitSource": true
   }
 }
