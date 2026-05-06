@@ -24,14 +24,25 @@ chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 # ── Certbot + Route 53 DNS-01 challenge ──────────────────────────────────────
 pip3 install certbot certbot-dns-route53
 
-certbot certonly \
-  --dns-route53 \
-  -d "${DOMAIN}" \
-  -d "*.${DOMAIN}" \
-  --non-interactive \
-  --agree-tos \
-  --email "${ADMIN_EMAIL}" \
-  --no-eff-email
+# Restore cached cert from S3 first (avoids Let's Encrypt rate limits on instance rotation)
+aws s3 sync "s3://${BACKUP_BUCKET}/letsencrypt/" /etc/letsencrypt/ --exact-timestamps 2>/dev/null || true
+
+if certbot certificates 2>/dev/null | grep -q "VALID"; then
+  echo "Valid certificate restored from S3 — skipping certbot request"
+else
+  echo "No valid certificate in S3 — requesting new certificate from Let's Encrypt"
+  certbot certonly \
+    --dns-route53 \
+    -d "${DOMAIN}" \
+    -d "*.${DOMAIN}" \
+    --non-interactive \
+    --agree-tos \
+    --email "${ADMIN_EMAIL}" \
+    --no-eff-email
+
+  # Cache the new cert in S3 for future instances
+  aws s3 sync /etc/letsencrypt/ "s3://${BACKUP_BUCKET}/letsencrypt/" --exact-timestamps
+fi
 
 # ── Nginx as SSL reverse proxy ────────────────────────────────────────────────
 cat > /etc/nginx/conf.d/unifi.conf << NGINX
@@ -242,10 +253,10 @@ aws s3 sync /opt/unifi/config/data/backup/autobackup/ \
 CRON
 chmod +x /etc/cron.hourly/unifi-backup-sync
 
-# Daily: certbot renewal (nginx reloads automatically via --deploy-hook)
-cat > /etc/cron.daily/certbot-renew << 'CRON'
+# Daily: certbot renewal — reload nginx and sync renewed cert back to S3
+cat > /etc/cron.daily/certbot-renew << CRON
 #!/bin/bash
-certbot renew --quiet --deploy-hook "systemctl reload nginx"
+certbot renew --quiet --deploy-hook "systemctl reload nginx && aws s3 sync /etc/letsencrypt/ s3://${BACKUP_BUCKET}/letsencrypt/ --exact-timestamps"
 CRON
 chmod +x /etc/cron.daily/certbot-renew
 
