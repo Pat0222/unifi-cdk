@@ -196,47 +196,66 @@ if [ -f /opt/unifi/backup/restore.unf ]; then
     echo "Establishing session with setup wizard..."
     curl -sk -c /tmp/unifi-cookies.txt -L "https://localhost:8443" -o /dev/null
 
-    # Fetch CSRF token if available
-    CSRF_TOKEN=$(curl -sk -b /tmp/unifi-cookies.txt \
-      "https://localhost:8443/api/auth/csrf" 2>/dev/null \
-      | python3 -c "import sys,json; print(json.load(sys.stdin).get('token',''))" 2>/dev/null || echo "")
+    # Extract CSRF token from cookie jar (Unifi sets it on first page load)
+    CSRF_TOKEN=$(grep -i csrf_token /tmp/unifi-cookies.txt 2>/dev/null | awk '{print $NF}' || echo "")
     echo "CSRF token: ${CSRF_TOKEN:-none}"
 
-    echo "Submitting backup restore via setup API..."
-    RESTORE_HTTP="000"
+    echo "Uploading backup file..."
+    UPLOAD_HTTP="000"
     for attempt in $(seq 1 5); do
-      RESTORE_HTTP=$(curl -sk -X POST "https://localhost:8443/upload/backup" \
+      UPLOAD_HTTP=$(curl -sk -X POST "https://localhost:8443/upload/backup" \
         -b /tmp/unifi-cookies.txt \
         ${CSRF_TOKEN:+-H "x-csrf-token: ${CSRF_TOKEN}"} \
         -F "file=@/opt/unifi/backup/restore.unf" \
         --max-time 120 \
         -w "%{http_code}" \
-        -o /tmp/restore_response.txt 2>/dev/null || echo "000")
-      echo "Restore attempt ${attempt} — HTTP: ${RESTORE_HTTP}"
-      echo "Restore response body: $(cat /tmp/restore_response.txt 2>/dev/null)"
-      if [ "${RESTORE_HTTP}" = "200" ]; then
-        echo "Restore submitted successfully"
+        -o /tmp/upload_response.txt 2>/dev/null || echo "000")
+      echo "Upload attempt ${attempt} — HTTP: ${UPLOAD_HTTP}"
+      if [ "${UPLOAD_HTTP}" = "200" ]; then
+        echo "Backup uploaded successfully"
         break
       fi
       echo "Attempt ${attempt} failed, waiting 30s before retry..."
       sleep 30
     done
 
-    if [ "${RESTORE_HTTP}" = "200" ]; then
-      # Controller restarts itself after restore — wait for it to come back up
-      echo "Waiting for controller to restart after restore..."
-      sleep 30
-      for i in $(seq 1 30); do
-        HTTP_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 "https://localhost:8443" 2>/dev/null || echo "000")
-        if [ "${HTTP_CODE}" = "200" ] || [ "${HTTP_CODE}" = "302" ]; then
-          echo "Controller is back up (HTTP ${HTTP_CODE})"
-          break
+    if [ "${UPLOAD_HTTP}" = "200" ]; then
+      BACKUP_ID=$(python3 -c "import json; d=json.load(open('/tmp/upload_response.txt')); print(d['data'][0]['backup_id'])" 2>/dev/null || echo "")
+      echo "Backup ID: ${BACKUP_ID:-none}"
+
+      if [ -n "${BACKUP_ID}" ]; then
+        echo "Triggering restore..."
+        RESTORE_HTTP=$(curl -sk -X POST "https://localhost:8443/api/cmd/backup" \
+          -b /tmp/unifi-cookies.txt \
+          -H "Content-Type: application/json" \
+          ${CSRF_TOKEN:+-H "x-csrf-token: ${CSRF_TOKEN}"} \
+          -d "{\"cmd\":\"restore\",\"backup_id\":\"${BACKUP_ID}\"}" \
+          --max-time 30 \
+          -w "%{http_code}" \
+          -o /tmp/restore_response.txt 2>/dev/null || echo "000")
+        echo "Restore trigger — HTTP: ${RESTORE_HTTP}"
+        echo "Restore response: $(cat /tmp/restore_response.txt 2>/dev/null)"
+
+        if [ "${RESTORE_HTTP}" = "200" ]; then
+          echo "Restore triggered — waiting for controller to restart..."
+          sleep 30
+          for i in $(seq 1 30); do
+            HTTP_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 "https://localhost:8443" 2>/dev/null || echo "000")
+            if [ "${HTTP_CODE}" = "200" ] || [ "${HTTP_CODE}" = "302" ]; then
+              echo "Controller is back up (HTTP ${HTTP_CODE})"
+              break
+            fi
+            echo "Still restarting... attempt $i/30"
+            sleep 10
+          done
+        else
+          echo "WARNING: Restore trigger failed — instance will start fresh"
         fi
-        echo "Still restarting... attempt $i/30"
-        sleep 10
-      done
+      else
+        echo "WARNING: Could not parse backup_id from upload response — skipping restore"
+      fi
     else
-      echo "WARNING: Restore failed after 5 attempts — instance will start fresh"
+      echo "WARNING: Backup upload failed after 5 attempts — instance will start fresh"
     fi
   else
     echo "WARNING: Unifi never became available — skipping restore"
