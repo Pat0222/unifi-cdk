@@ -1,0 +1,11 @@
+node_modules/
+dist/
+cdk.out/
+.cdk.staging/
+*.js
+*.d.ts
+!jest.config.js
+
+# Local context overrides — contains account-specific values, do not commit
+cdk.context.json
+.env

@@ -1,0 +1,25 @@
+{
+  "name": "unifi-cdk",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "cdk": "cdk"
+  },
+  "devDependencies": {
+    "@types/node": "22.x",
+    "aws-cdk": "2.x",
+    "esbuild": "^0.28.0",
+    "ts-node": "^10.9.2",
+    "typescript": "~5.7.2"
+  },
+  "dependencies": {
+    "@aws-sdk/client-ec2": "^3.0.0",
+    "@aws-sdk/client-secrets-manager": "^3.0.0",
+    "@aws-sdk/client-sfn": "^3.0.0",
+    "@aws-sdk/client-ssm": "^3.0.0",
+    "aws-cdk-lib": "2.x",
+    "constructs": "^10.0.0"
+  }
+}
