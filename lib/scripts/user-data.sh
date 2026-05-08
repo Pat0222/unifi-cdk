@@ -13,6 +13,13 @@ API_KEY_SECRET_ARN="${API_KEY_SECRET_ARN}"
 dnf update -y
 dnf install -y docker python3-pip nginx aws-cli jq
 
+# 2GB swap — t3.small has 2GB RAM and MongoDB + Unifi JVM can exhaust it
+fallocate -l 2G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
 systemctl enable docker
 systemctl start docker
 
