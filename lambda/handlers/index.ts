@@ -201,6 +201,22 @@ export async function triggerInitialCutover(event: {
 
   const { LaunchTemplateId, OldInstanceId, EipAllocationId, StateMachineArn } = event.ResourceProperties;
 
+  // Read current instance from SSM at runtime — authoritative after first deploy.
+  // Falls back to OldInstanceId prop (from CDK context) on first deploy when SSM doesn't exist yet.
+  let oldInstanceId: string;
+  try {
+    const param = await ssm.send(new GetParameterCommand({ Name: '/unifi/current-instance-id' }));
+    oldInstanceId = param.Parameter?.Value ?? OldInstanceId;
+  } catch {
+    oldInstanceId = OldInstanceId;
+    await ssm.send(new PutParameterCommand({
+      Name: '/unifi/current-instance-id',
+      Value: oldInstanceId,
+      Type: 'String',
+      Description: 'The currently active Unifi EC2 instance ID',
+    }));
+  }
+
   const runResult = await ec2.send(new RunInstancesCommand({
     MinCount: 1,
     MaxCount: 1,
@@ -226,7 +242,7 @@ export async function triggerInitialCutover(event: {
     name: `cutover-${Date.now()}`,
     input: JSON.stringify({
       newInstanceId,
-      oldInstanceId: OldInstanceId,
+      oldInstanceId,
       eipAllocationId: EipAllocationId,
     }),
   }));

@@ -62,12 +62,8 @@ export class UnifiStack extends cdk.Stack {
     // ── Unifi API key (pre-created in Secrets Manager) ────────────────────────
     const apiKeySecret = secretsmanager.Secret.fromSecretNameV2(this, 'UnifiApiKey', 'unifi/api-key');
 
-    // ── SSM parameters for rotation state ────────────────────────────────────
-    const currentInstanceParam = new ssm.StringParameter(this, 'CurrentInstanceId', {
-      parameterName: '/unifi/current-instance-id',
-      stringValue: existingInstanceId,
-      description: 'The currently active Unifi EC2 instance ID',
-    });
+    // /unifi/current-instance-id is created by triggerInitialCutover on first deploy
+    // and updated by performCutover after each rotation — not managed by CloudFormation
 
     // ── IAM role for EC2 instance ─────────────────────────────────────────────
     const instanceRole = new iam.Role(this, 'InstanceRole', {
@@ -349,7 +345,7 @@ export class UnifiStack extends cdk.Stack {
       serviceToken: customResourceProvider.serviceToken,
       properties: {
         LaunchTemplateId: launchTemplate.launchTemplateId,
-        OldInstanceId: 'none',
+        OldInstanceId: existingInstanceId,
         EipAllocationId: eipAllocationId,
         StateMachineArn: stateMachineArn,
         // Changing this forces re-trigger on redeploy
