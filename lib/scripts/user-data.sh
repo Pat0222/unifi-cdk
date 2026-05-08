@@ -293,8 +293,7 @@ cat > /etc/cron.hourly/unifi-backup-sync << CRON
 #!/bin/bash
 aws s3 sync /opt/unifi/config/data/backup/autobackup/ \
   "s3://${BACKUP_BUCKET}/backups/" \
-  --exclude "*" --include "*.unf" \
-  --delete
+  --exclude "*" --include "*.unf"
 CRON
 chmod +x /etc/cron.hourly/unifi-backup-sync
 
