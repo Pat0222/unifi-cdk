@@ -217,6 +217,8 @@ export class UnifiStack extends cdk.Stack {
       resources: ['*'],
     }));
 
+    apiKeySecret.grantRead(lambdaRole);
+
     lambdaRole.addToPolicy(new iam.PolicyStatement({
       actions: ['iam:PassRole'],
       resources: [instanceRole.roleArn],
@@ -288,6 +290,17 @@ export class UnifiStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
       environment: {
         BACKUP_BUCKET: backupBucket.bucketName,
+      },
+    });
+
+    const networkMetricsFn = new NodejsFunction(this, 'NetworkMetricsHandler', {
+      ...commonFnProps,
+      entry: path.join(handlersDir, 'network-metrics.ts'),
+      handler: 'publishNetworkMetrics',
+      timeout: cdk.Duration.seconds(60),
+      environment: {
+        API_KEY_SECRET_ARN: apiKeySecret.secretArn,
+        CONTROLLER_DOMAIN: domain,
       },
     });
 
@@ -523,6 +536,13 @@ export class UnifiStack extends cdk.Stack {
       targets: [new targets.LambdaFunction(backupCheckFn)],
     });
 
+    // ── EventBridge: hourly network metrics ───────────────────────────────────
+    new events.Rule(this, 'NetworkMetricsRule', {
+      description: 'Publish UniFi network metrics to CloudWatch every hour',
+      schedule: events.Schedule.rate(cdk.Duration.hours(1)),
+      targets: [new targets.LambdaFunction(networkMetricsFn)],
+    });
+
     // ── EventBridge: weekly scheduled rotation check (rotate if >30 days old) ─
     new events.Rule(this, 'ScheduledRotationRule', {
       description: 'Rotate Unifi instance if it has not rotated in the past 30 days',
@@ -583,6 +603,35 @@ export class UnifiStack extends cdk.Stack {
               period: cdk.Duration.hours(1),
             })],
             leftYAxis: { min: 0, max: 1 },
+            width: 12,
+          }),
+        ],
+        [
+          // SEARCH expressions find all per-site metrics without needing site names at synth time
+          new cloudwatch.GraphWidget({
+            title: 'Connected Clients by Site',
+            left: [new cloudwatch.MathExpression({
+              expression: 'SEARCH(\'{UnifiController,Site} MetricName="ConnectedClients"\', \'Sum\', 3600)',
+              label: '',
+              period: cdk.Duration.hours(1),
+            })],
+            leftYAxis: { min: 0 },
+            width: 12,
+          }),
+          new cloudwatch.GraphWidget({
+            title: 'WAN Throughput by Site',
+            left: [new cloudwatch.MathExpression({
+              expression: 'SEARCH(\'{UnifiController,Site} MetricName="WanRxBytesPerSec"\', \'Sum\', 3600)',
+              label: 'Download',
+              period: cdk.Duration.hours(1),
+            })],
+            right: [new cloudwatch.MathExpression({
+              expression: 'SEARCH(\'{UnifiController,Site} MetricName="WanTxBytesPerSec"\', \'Sum\', 3600)',
+              label: 'Upload',
+              period: cdk.Duration.hours(1),
+            })],
+            leftYAxis: { min: 0, label: 'Download (B/s)', showUnits: false },
+            rightYAxis: { min: 0, label: 'Upload (B/s)', showUnits: false },
             width: 12,
           }),
         ],
