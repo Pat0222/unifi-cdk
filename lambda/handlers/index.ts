@@ -8,13 +8,17 @@ import {
   DescribeLaunchTemplateVersionsCommand,
 } from '@aws-sdk/client-ec2';
 import { SSMClient, GetParameterCommand, PutParameterCommand } from '@aws-sdk/client-ssm';
-import { SFNClient, StartExecutionCommand } from '@aws-sdk/client-sfn';
+import { SFNClient, StartExecutionCommand, ListExecutionsCommand } from '@aws-sdk/client-sfn';
+import { S3Client, ListObjectsV2Command } from '@aws-sdk/client-s3';
+import { CloudWatchClient, PutMetricDataCommand } from '@aws-sdk/client-cloudwatch';
 import * as https from 'https';
 import * as http from 'http';
 
 const ec2 = new EC2Client({ region: process.env.AWS_REGION });
 const ssm = new SSMClient({ region: process.env.AWS_REGION });
 const sfn = new SFNClient({ region: process.env.AWS_REGION });
+const s3 = new S3Client({ region: process.env.AWS_REGION });
+const cw = new CloudWatchClient({ region: process.env.AWS_REGION });
 
 class HealthCheckFailed extends Error {
   constructor(message: string) {
@@ -67,6 +71,44 @@ function checkNotSetupWizard(url: string): Promise<void> {
       reject(new HealthCheckFailed(`Timeout connecting to ${url}`));
     });
   });
+}
+
+// Shared rotation logic used by startRotation and scheduledRotationCheck
+async function triggerRotation(params: {
+  launchTemplateId: string;
+  stateMachineArn: string;
+  eipAllocationId: string;
+  oldInstanceId: string;
+}): Promise<void> {
+  const { launchTemplateId, stateMachineArn, eipAllocationId, oldInstanceId } = params;
+
+  const ltVersions = await ec2.send(new DescribeLaunchTemplateVersionsCommand({
+    LaunchTemplateId: launchTemplateId,
+    Versions: ['$Latest'],
+  }));
+  const ltVersion = ltVersions.LaunchTemplateVersions?.[0]?.VersionNumber?.toString() ?? '$Latest';
+
+  const runResult = await ec2.send(new RunInstancesCommand({
+    MinCount: 1,
+    MaxCount: 1,
+    LaunchTemplate: { LaunchTemplateId: launchTemplateId, Version: ltVersion },
+    TagSpecifications: [{
+      ResourceType: 'instance',
+      Tags: [
+        { Key: 'Name', Value: 'unifi-controller-new' },
+        { Key: 'Project', Value: 'unifi' },
+        { Key: 'State', Value: 'pending-cutover' },
+      ],
+    }],
+  }));
+
+  const newInstanceId = runResult.Instances?.[0]?.InstanceId;
+  if (!newInstanceId) throw new Error('Failed to launch new instance');
+
+  await sfn.send(new StartExecutionCommand({
+    stateMachineArn,
+    input: JSON.stringify({ newInstanceId, oldInstanceId, eipAllocationId }),
+  }));
 }
 
 // Checks EC2 system/instance status (2/2) and Unifi ports
@@ -138,7 +180,6 @@ export async function cleanup(event: { instanceId: string }): Promise<void> {
 }
 
 // Triggered by EventBridge when a new AL2023 AMI is published
-// Creates a new instance and kicks off the Step Functions cutover workflow
 export async function startRotation(event: Record<string, unknown>): Promise<void> {
   const launchTemplateId = process.env.LAUNCH_TEMPLATE_ID!;
   const stateMachineArn = process.env.STATE_MACHINE_ARN!;
@@ -149,39 +190,77 @@ export async function startRotation(event: Record<string, unknown>): Promise<voi
   }));
   const oldInstanceId = currentInstanceParam.Parameter?.Value ?? 'none';
 
-  const ltVersions = await ec2.send(new DescribeLaunchTemplateVersionsCommand({
-    LaunchTemplateId: launchTemplateId,
-    Versions: ['$Latest'],
-  }));
-  const ltVersion = ltVersions.LaunchTemplateVersions?.[0]?.VersionNumber?.toString() ?? '$Latest';
+  await triggerRotation({ launchTemplateId, stateMachineArn, eipAllocationId, oldInstanceId });
+}
 
-  const runResult = await ec2.send(new RunInstancesCommand({
-    MinCount: 1,
-    MaxCount: 1,
-    LaunchTemplate: {
-      LaunchTemplateId: launchTemplateId,
-      Version: ltVersion,
-    },
-    TagSpecifications: [{
-      ResourceType: 'instance',
-      Tags: [
-        { Key: 'Name', Value: 'unifi-controller-new' },
-        { Key: 'Project', Value: 'unifi' },
-        { Key: 'State', Value: 'pending-cutover' },
-      ],
-    }],
-  }));
+// Triggered weekly — rotates only if the current instance is older than 30 days
+export async function scheduledRotationCheck(event: Record<string, unknown>): Promise<void> {
+  const launchTemplateId = process.env.LAUNCH_TEMPLATE_ID!;
+  const stateMachineArn = process.env.STATE_MACHINE_ARN!;
+  const eipAllocationId = process.env.EIP_ALLOCATION_ID!;
+  const maxAgeDays = 30;
 
-  const newInstanceId = runResult.Instances?.[0]?.InstanceId;
-  if (!newInstanceId) throw new Error('Failed to launch new instance');
-
-  await sfn.send(new StartExecutionCommand({
+  // Skip if a rotation is already in progress
+  const running = await sfn.send(new ListExecutionsCommand({
     stateMachineArn,
-    input: JSON.stringify({
-      newInstanceId,
-      oldInstanceId,
-      eipAllocationId,
-    }),
+    statusFilter: 'RUNNING',
+  }));
+  if ((running.executions?.length ?? 0) > 0) {
+    console.log('Rotation already in progress — skipping scheduled check');
+    return;
+  }
+
+  const param = await ssm.send(new GetParameterCommand({ Name: '/unifi/current-instance-id' }));
+  const currentInstanceId = param.Parameter?.Value;
+  if (!currentInstanceId || currentInstanceId === 'none') return;
+
+  const describeResult = await ec2.send(new DescribeInstancesCommand({ InstanceIds: [currentInstanceId] }));
+  const launchTime = describeResult.Reservations?.[0]?.Instances?.[0]?.LaunchTime;
+  if (!launchTime) return;
+
+  const ageDays = (Date.now() - launchTime.getTime()) / (1000 * 60 * 60 * 24);
+  console.log(`Instance ${currentInstanceId} is ${ageDays.toFixed(1)} days old`);
+
+  if (ageDays < maxAgeDays) {
+    console.log('Instance is fresh — no rotation needed');
+    return;
+  }
+
+  console.log(`Instance is older than ${maxAgeDays} days — triggering rotation`);
+  await triggerRotation({ launchTemplateId, stateMachineArn, eipAllocationId, oldInstanceId: currentInstanceId });
+}
+
+// Triggered hourly — publishes BackupFreshness metric (1 = fresh, 0 = stale)
+export async function checkBackupFreshness(event: Record<string, unknown>): Promise<void> {
+  const backupBucket = process.env.BACKUP_BUCKET!;
+  const maxAgeHours = 25;
+
+  const listResult = await s3.send(new ListObjectsV2Command({
+    Bucket: backupBucket,
+    Prefix: 'backups/',
+  }));
+
+  const backups = (listResult.Contents ?? [])
+    .filter(obj => obj.Key?.endsWith('.unf'))
+    .sort((a, b) => (b.LastModified?.getTime() ?? 0) - (a.LastModified?.getTime() ?? 0));
+
+  let freshness = 0;
+  if (backups.length > 0) {
+    const ageHours = (Date.now() - (backups[0].LastModified?.getTime() ?? 0)) / (1000 * 60 * 60);
+    freshness = ageHours < maxAgeHours ? 1 : 0;
+    console.log(`Newest backup: ${backups[0].Key}, age: ${ageHours.toFixed(1)}h, fresh: ${freshness}`);
+  } else {
+    console.log('No backups found in S3');
+  }
+
+  await cw.send(new PutMetricDataCommand({
+    Namespace: 'UnifiController',
+    MetricData: [{
+      MetricName: 'BackupFreshness',
+      Dimensions: [{ Name: 'Service', Value: 'unifi' }],
+      Value: freshness,
+      Unit: 'None',
+    }],
   }));
 }
 

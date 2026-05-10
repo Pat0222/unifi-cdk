@@ -195,7 +195,17 @@ export class UnifiStack extends cdk.Stack {
     }));
 
     lambdaRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['states:StartExecution'],
+      actions: ['states:StartExecution', 'states:ListExecutions'],
+      resources: ['*'],
+    }));
+
+    lambdaRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['s3:ListBucket', 's3:GetObject'],
+      resources: [backupBucket.bucketArn, `${backupBucket.bucketArn}/*`],
+    }));
+
+    lambdaRole.addToPolicy(new iam.PolicyStatement({
+      actions: ['cloudwatch:PutMetricData'],
       resources: ['*'],
     }));
 
@@ -249,6 +259,27 @@ export class UnifiStack extends cdk.Stack {
       ...commonFnProps,
       handler: 'triggerInitialCutover',
       timeout: cdk.Duration.seconds(30),
+    });
+
+    // scheduledRotationCheckFn and backupCheckFn env vars that depend on stateMachineArn
+    // are added via addEnvironment() after stateMachineArn is defined below
+    const scheduledRotationFn = new NodejsFunction(this, 'ScheduledRotationHandler', {
+      ...commonFnProps,
+      handler: 'scheduledRotationCheck',
+      timeout: cdk.Duration.seconds(60),
+      environment: {
+        LAUNCH_TEMPLATE_ID: launchTemplate.launchTemplateId!,
+        EIP_ALLOCATION_ID: eipAllocationId,
+      },
+    });
+
+    const backupCheckFn = new NodejsFunction(this, 'BackupCheckHandler', {
+      ...commonFnProps,
+      handler: 'checkBackupFreshness',
+      timeout: cdk.Duration.seconds(30),
+      environment: {
+        BACKUP_BUCKET: backupBucket.bucketName,
+      },
     });
 
     // ── Step Functions state machine ──────────────────────────────────────────
@@ -326,6 +357,7 @@ export class UnifiStack extends cdk.Stack {
 
     // states:StartExecution on * is already in lambdaRole policy above — no grant needed here
     rotatorFn.addEnvironment('STATE_MACHINE_ARN', stateMachineArn);
+    scheduledRotationFn.addEnvironment('STATE_MACHINE_ARN', stateMachineArn);
 
     // ── EventBridge rule: new AL2023 AMI published ────────────────────────────
     // SSM publishes a new parameter version when a new AMI is available
@@ -434,6 +466,122 @@ export class UnifiStack extends cdk.Stack {
       alarmName: 'unifi-health-check',
     });
     healthCheckAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
+
+    // ── Memory usage alarm ────────────────────────────────────────────────────
+    const memAlarm = new cloudwatch.Alarm(this, 'MemUsageAlarm', {
+      metric: new cloudwatch.Metric({
+        namespace: 'UnifiController',
+        metricName: 'mem_used_percent',
+        dimensionsMap: { Service: 'unifi' },
+        statistic: 'Average',
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 85,
+      evaluationPeriods: 2,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'Unifi controller memory usage exceeded 85%',
+      alarmName: 'unifi-memory-usage',
+    });
+    memAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
+
+    // ── Backup freshness alarm ────────────────────────────────────────────────
+    const backupFreshnessAlarm = new cloudwatch.Alarm(this, 'BackupFreshnessAlarm', {
+      metric: new cloudwatch.Metric({
+        namespace: 'UnifiController',
+        metricName: 'BackupFreshness',
+        dimensionsMap: { Service: 'unifi' },
+        statistic: 'Minimum',
+        period: cdk.Duration.hours(1),
+      }),
+      threshold: 1,
+      evaluationPeriods: 2,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      alarmDescription: 'No Unifi backup in S3 newer than 25 hours',
+      alarmName: 'unifi-backup-freshness',
+    });
+    backupFreshnessAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
+
+    // ── EventBridge: hourly backup freshness check ────────────────────────────
+    new events.Rule(this, 'BackupCheckRule', {
+      description: 'Check Unifi backup freshness in S3 every hour',
+      schedule: events.Schedule.rate(cdk.Duration.hours(1)),
+      targets: [new targets.LambdaFunction(backupCheckFn)],
+    });
+
+    // ── EventBridge: weekly scheduled rotation check (rotate if >30 days old) ─
+    new events.Rule(this, 'ScheduledRotationRule', {
+      description: 'Rotate Unifi instance if it has not rotated in the past 30 days',
+      schedule: events.Schedule.cron({ weekDay: 'MON', hour: '3', minute: '0' }),
+      targets: [new targets.LambdaFunction(scheduledRotationFn)],
+    });
+
+    // ── CloudWatch dashboard ──────────────────────────────────────────────────
+    new cloudwatch.Dashboard(this, 'UnifiDashboard', {
+      dashboardName: 'unifi-controller',
+      widgets: [
+        [
+          new cloudwatch.GraphWidget({
+            title: 'Disk Usage %',
+            left: [new cloudwatch.Metric({
+              namespace: 'UnifiController',
+              metricName: 'disk_used_percent',
+              dimensionsMap: { Service: 'unifi' },
+              statistic: 'Average',
+              period: cdk.Duration.minutes(5),
+            })],
+            leftYAxis: { min: 0, max: 100 },
+            width: 12,
+          }),
+          new cloudwatch.GraphWidget({
+            title: 'Memory Usage %',
+            left: [new cloudwatch.Metric({
+              namespace: 'UnifiController',
+              metricName: 'mem_used_percent',
+              dimensionsMap: { Service: 'unifi' },
+              statistic: 'Average',
+              period: cdk.Duration.minutes(5),
+            })],
+            leftYAxis: { min: 0, max: 100 },
+            width: 12,
+          }),
+        ],
+        [
+          new cloudwatch.GraphWidget({
+            title: 'Route 53 Health Check',
+            left: [new cloudwatch.Metric({
+              namespace: 'AWS/Route53',
+              metricName: 'HealthCheckStatus',
+              dimensionsMap: { HealthCheckId: r53HealthCheck.attrHealthCheckId },
+              statistic: 'Minimum',
+              period: cdk.Duration.minutes(1),
+            })],
+            leftYAxis: { min: 0, max: 1 },
+            width: 12,
+          }),
+          new cloudwatch.GraphWidget({
+            title: 'Backup Freshness',
+            left: [new cloudwatch.Metric({
+              namespace: 'UnifiController',
+              metricName: 'BackupFreshness',
+              dimensionsMap: { Service: 'unifi' },
+              statistic: 'Minimum',
+              period: cdk.Duration.hours(1),
+            })],
+            leftYAxis: { min: 0, max: 1 },
+            width: 12,
+          }),
+        ],
+        [
+          new cloudwatch.AlarmStatusWidget({
+            title: 'Alarm Status',
+            alarms: [diskAlarm, memAlarm, healthCheckAlarm, backupFreshnessAlarm],
+            width: 24,
+          }),
+        ],
+      ],
+    });
 
     // ── Custom Resource: kick off initial cutover on first deploy ─────────────
     const customResourceProvider = new cr.Provider(this, 'CutoverProvider', {

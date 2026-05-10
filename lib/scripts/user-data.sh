@@ -37,6 +37,9 @@ cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CWCO
         "measurement": ["disk_used_percent"],
         "resources": ["/"],
         "ignore_file_system_types": ["tmpfs", "devtmpfs"]
+      },
+      "mem": {
+        "measurement": ["mem_used_percent"]
       }
     }
   }
