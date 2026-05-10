@@ -11,7 +11,7 @@ API_KEY_SECRET_ARN="${API_KEY_SECRET_ARN}"
 
 # ── System setup ─────────────────────────────────────────────────────────────
 dnf update -y
-dnf install -y docker python3-pip nginx aws-cli jq
+dnf install -y docker python3-pip nginx aws-cli jq amazon-cloudwatch-agent
 
 # 2GB swap — t3.small has 2GB RAM and MongoDB + Unifi JVM can exhaust it
 fallocate -l 2G /swapfile
@@ -22,6 +22,32 @@ echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
 systemctl enable docker
 systemctl start docker
+
+# ── CloudWatch agent — disk metrics under Service=unifi (no InstanceId) ──────
+# Fixed dimension lets the CDK alarm survive instance rotation without updates
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'CWCONFIG'
+{
+  "metrics": {
+    "namespace": "UnifiController",
+    "append_dimensions": {
+      "Service": "unifi"
+    },
+    "metrics_collected": {
+      "disk": {
+        "measurement": ["disk_used_percent"],
+        "resources": ["/"],
+        "ignore_file_system_types": ["tmpfs", "devtmpfs"]
+      }
+    }
+  }
+}
+CWCONFIG
+
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config \
+  -m ec2 \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json \
+  -s
 
 # Docker Compose plugin
 mkdir -p /usr/local/lib/docker/cli-plugins

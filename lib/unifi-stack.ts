@@ -10,6 +10,8 @@ import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
+import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cr from 'aws-cdk-lib/custom-resources';
@@ -73,6 +75,7 @@ export class UnifiStack extends cdk.Stack {
       assumedBy: new iam.ServicePrincipal('ec2.amazonaws.com'),
       managedPolicies: [
         iam.ManagedPolicy.fromAwsManagedPolicyName('AmazonSSMManagedInstanceCore'),
+        iam.ManagedPolicy.fromAwsManagedPolicyName('CloudWatchAgentServerPolicy'),
       ],
     });
 
@@ -379,6 +382,58 @@ export class UnifiStack extends cdk.Stack {
         ),
       })],
     });
+
+    // ── CloudWatch disk usage alarm ───────────────────────────────────────────
+    // CWAgent publishes under Service=unifi (no InstanceId), so the alarm
+    // survives instance rotation without any updates
+    const diskAlarm = new cloudwatch.Alarm(this, 'DiskUsageAlarm', {
+      metric: new cloudwatch.Metric({
+        namespace: 'UnifiController',
+        metricName: 'disk_used_percent',
+        dimensionsMap: { Service: 'unifi' },
+        statistic: 'Average',
+        period: cdk.Duration.minutes(5),
+      }),
+      threshold: 80,
+      evaluationPeriods: 2,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'Unifi controller disk usage on / exceeded 80%',
+      alarmName: 'unifi-disk-usage',
+    });
+    diskAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
+
+    // ── Route 53 health check ─────────────────────────────────────────────────
+    const r53HealthCheck = new route53.CfnHealthCheck(this, 'UnifiHealthCheck', {
+      healthCheckConfig: {
+        type: 'HTTPS',
+        fullyQualifiedDomainName: domain,
+        port: 443,
+        resourcePath: '/',
+        requestInterval: 30,
+        failureThreshold: 3,
+        enableSni: true,
+      },
+      healthCheckTags: [{ key: 'Name', value: 'unifi-controller' }],
+    });
+
+    // Route 53 health check metrics are always in us-east-1 (same as our stack)
+    const healthCheckAlarm = new cloudwatch.Alarm(this, 'UnifiHealthCheckAlarm', {
+      metric: new cloudwatch.Metric({
+        namespace: 'AWS/Route53',
+        metricName: 'HealthCheckStatus',
+        dimensionsMap: { HealthCheckId: r53HealthCheck.attrHealthCheckId },
+        statistic: 'Minimum',
+        period: cdk.Duration.minutes(1),
+      }),
+      threshold: 1,
+      evaluationPeriods: 3,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      alarmDescription: `${domain} is failing Route 53 health checks`,
+      alarmName: 'unifi-health-check',
+    });
+    healthCheckAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
 
     // ── Custom Resource: kick off initial cutover on first deploy ─────────────
     const customResourceProvider = new cr.Provider(this, 'CutoverProvider', {
