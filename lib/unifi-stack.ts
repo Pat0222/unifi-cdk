@@ -8,6 +8,8 @@ import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cr from 'aws-cdk-lib/custom-resources';
@@ -26,13 +28,14 @@ export interface UnifiStackProps extends cdk.StackProps {
   adminEmail: string;
   vpcId: string;
   eipPublicIp: string;
+  forceRotation?: boolean;
 }
 
 export class UnifiStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: UnifiStackProps) {
     super(scope, id, props);
 
-    const { eipAllocationId, hostedZoneId, existingInstanceId, domain, adminEmail, vpcId, eipPublicIp } = props;
+    const { eipAllocationId, hostedZoneId, existingInstanceId, domain, adminEmail, vpcId, eipPublicIp, forceRotation } = props;
     const region = this.region;
 
     // ── S3 backup bucket ──────────────────────────────────────────────────────
@@ -336,6 +339,47 @@ export class UnifiStack extends cdk.Stack {
       targets: [new targets.LambdaFunction(rotatorFn)],
     });
 
+    // ── SNS alerting for cutover success/failure ──────────────────────────────
+    const alertTopic = new sns.Topic(this, 'CutoverAlerts', {
+      topicName: 'unifi-cutover-alerts',
+      displayName: 'Unifi Cutover Alerts',
+    });
+    alertTopic.addSubscription(new snsSubscriptions.EmailSubscription(adminEmail));
+
+    new events.Rule(this, 'CutoverSuccessRule', {
+      description: 'Notify when Unifi cutover state machine succeeds',
+      eventPattern: {
+        source: ['aws.states'],
+        detailType: ['Step Functions Execution Status Change'],
+        detail: {
+          stateMachineArn: [stateMachineArn],
+          status: ['SUCCEEDED'],
+        },
+      },
+      targets: [new targets.SnsTopic(alertTopic, {
+        message: events.RuleTargetInput.fromText(
+          `Unifi instance rotation SUCCEEDED. Execution: ${events.EventField.fromPath('$.detail.executionArn')}`
+        ),
+      })],
+    });
+
+    new events.Rule(this, 'CutoverFailureRule', {
+      description: 'Notify when Unifi cutover state machine fails',
+      eventPattern: {
+        source: ['aws.states'],
+        detailType: ['Step Functions Execution Status Change'],
+        detail: {
+          stateMachineArn: [stateMachineArn],
+          status: ['FAILED', 'TIMED_OUT', 'ABORTED'],
+        },
+      },
+      targets: [new targets.SnsTopic(alertTopic, {
+        message: events.RuleTargetInput.fromText(
+          `Unifi instance rotation FAILED (status: ${events.EventField.fromPath('$.detail.status')}). Execution: ${events.EventField.fromPath('$.detail.executionArn')}`
+        ),
+      })],
+    });
+
     // ── Custom Resource: kick off initial cutover on first deploy ─────────────
     const customResourceProvider = new cr.Provider(this, 'CutoverProvider', {
       onEventHandler: triggerFn,
@@ -348,8 +392,8 @@ export class UnifiStack extends cdk.Stack {
         OldInstanceId: existingInstanceId,
         EipAllocationId: eipAllocationId,
         StateMachineArn: stateMachineArn,
-        // Changing this forces re-trigger on redeploy
-        DeployTimestamp: new Date().toISOString(),
+        // Only changes when --context forceRotation=true, preventing rotation on every deploy
+        DeployTimestamp: forceRotation ? new Date().toISOString() : 'stable',
       },
     });
     // State machine ARN is a plain string (not a Ref) so CloudFormation won't

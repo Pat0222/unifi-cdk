@@ -18,4 +18,5 @@ new UnifiStack(app, 'UnifiStack', {
   adminEmail: app.node.tryGetContext('adminEmail'),
   vpcId: app.node.tryGetContext('vpcId'),
   eipPublicIp: app.node.tryGetContext('eipPublicIp'),
+  forceRotation: app.node.tryGetContext('forceRotation') === 'true',
 });
