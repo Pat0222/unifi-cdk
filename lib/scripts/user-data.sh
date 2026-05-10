@@ -128,7 +128,12 @@ server {
         proxy_set_header    X-Real-IP         \$remote_addr;
         proxy_set_header    X-Forwarded-For   \$proxy_add_x_forwarded_for;
         proxy_set_header    X-Forwarded-Proto \$scheme;
+        proxy_set_header    Accept-Encoding   "";
         proxy_read_timeout  90s;
+        # Hide "Upgrade to UniFi OS Server" modal — class names are CSS Modules hashes
+        # and may change after a UniFi version update (re-inspect and update if it reappears)
+        sub_filter          '</head>' '<style>.content__nMxmPavT.small__nMxmPavT{display:none!important}</style></head>';
+        sub_filter_once     on;
     }
 }
 NGINX
