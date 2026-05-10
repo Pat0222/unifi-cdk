@@ -12,6 +12,7 @@ import * as sns from 'aws-cdk-lib/aws-sns';
 import * as snsSubscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as cloudwatchActions from 'aws-cdk-lib/aws-cloudwatch-actions';
+import * as ce from 'aws-cdk-lib/aws-ce';
 import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as cr from 'aws-cdk-lib/custom-resources';
@@ -434,6 +435,7 @@ export class UnifiStack extends cdk.Stack {
       alarmName: 'unifi-disk-usage',
     });
     diskAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
+    diskAlarm.addOkAction(new cloudwatchActions.SnsAction(alertTopic));
 
     // ── Route 53 health check ─────────────────────────────────────────────────
     const r53HealthCheck = new route53.CfnHealthCheck(this, 'UnifiHealthCheck', {
@@ -466,6 +468,7 @@ export class UnifiStack extends cdk.Stack {
       alarmName: 'unifi-health-check',
     });
     healthCheckAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
+    healthCheckAlarm.addOkAction(new cloudwatchActions.SnsAction(alertTopic));
 
     // ── Memory usage alarm ────────────────────────────────────────────────────
     const memAlarm = new cloudwatch.Alarm(this, 'MemUsageAlarm', {
@@ -484,6 +487,7 @@ export class UnifiStack extends cdk.Stack {
       alarmName: 'unifi-memory-usage',
     });
     memAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
+    memAlarm.addOkAction(new cloudwatchActions.SnsAction(alertTopic));
 
     // ── Backup freshness alarm ────────────────────────────────────────────────
     const backupFreshnessAlarm = new cloudwatch.Alarm(this, 'BackupFreshnessAlarm', {
@@ -502,6 +506,7 @@ export class UnifiStack extends cdk.Stack {
       alarmName: 'unifi-backup-freshness',
     });
     backupFreshnessAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
+    backupFreshnessAlarm.addOkAction(new cloudwatchActions.SnsAction(alertTopic));
 
     // ── EventBridge: hourly backup freshness check ────────────────────────────
     new events.Rule(this, 'BackupCheckRule', {
@@ -581,6 +586,60 @@ export class UnifiStack extends cdk.Stack {
           }),
         ],
       ],
+    });
+
+    // ── Billing alarm ($25 threshold) ────────────────────────────────────────
+    // Requires "Enable billing alerts" in AWS Billing console (one-time manual step)
+    const billingAlarm = new cloudwatch.Alarm(this, 'BillingAlarm', {
+      metric: new cloudwatch.Metric({
+        namespace: 'AWS/Billing',
+        metricName: 'EstimatedCharges',
+        dimensionsMap: { Currency: 'USD' },
+        statistic: 'Maximum',
+        period: cdk.Duration.hours(6),
+      }),
+      threshold: 25,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      alarmName: 'unifi-monthly-cost',
+      alarmDescription: 'Estimated monthly AWS charges exceeded $25',
+    });
+    billingAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
+
+    // ── Cost anomaly detection ────────────────────────────────────────────────
+    // Allow Cost Anomaly Detection to publish to our SNS topic
+    alertTopic.addToResourcePolicy(new iam.PolicyStatement({
+      principals: [new iam.ServicePrincipal('costalerts.amazonaws.com')],
+      actions: ['sns:Publish'],
+      resources: [alertTopic.topicArn],
+    }));
+
+    const anomalyMonitor = new ce.CfnAnomalyMonitor(this, 'CostAnomalyMonitor', {
+      monitorName: 'unifi-cost-monitor',
+      monitorType: 'DIMENSIONAL',
+      monitorDimension: 'SERVICE',
+    });
+
+    new ce.CfnAnomalySubscription(this, 'CostAnomalySubscription', {
+      subscriptionName: 'unifi-cost-alerts',
+      monitorArnList: [anomalyMonitor.attrMonitorArn],
+      subscribers: [{ address: alertTopic.topicArn, type: 'SNS' }],
+      threshold: 10,
+      frequency: 'IMMEDIATE',
+    });
+
+    // ── CloudWatch log groups for instance logs ───────────────────────────────
+    new logs.LogGroup(this, 'UserDataLogs', {
+      logGroupName: '/unifi/user-data',
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    new logs.LogGroup(this, 'NginxErrorLogs', {
+      logGroupName: '/unifi/nginx-error',
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // ── Custom Resource: kick off initial cutover on first deploy ─────────────
