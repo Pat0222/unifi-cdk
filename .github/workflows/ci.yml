@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: Type check & synth
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: CDK synth
+        env:
+          CDK_DEFAULT_ACCOUNT: '123456789012'
+          CDK_DEFAULT_REGION: us-east-1
+        run: |
+          npx cdk synth \
+            --context eipAllocationId=eipalloc-00000000000000000 \
+            --context hostedZoneId=ZXXXXXXXXXXXXXXX \
+            --context existingInstanceId=i-00000000000000000 \
+            --context instanceType=t3.small \
+            --context region=us-east-1 \
+            --context domain=example.com \
+            --context adminEmail=ci@example.com \
+            --context vpcId=vpc-00000000 \
+            --context eipPublicIp=1.2.3.4 \
+            --quiet
