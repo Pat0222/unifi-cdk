@@ -41,6 +41,13 @@ export class UnifiStack extends cdk.Stack {
     const { eipAllocationId, hostedZoneId, existingInstanceId, domain, adminEmail, vpcId, eipPublicIp, forceRotation } = props;
     const region = this.region;
 
+    const DISK_ALARM_THRESHOLD_PCT    = 80;
+    const MEMORY_ALARM_THRESHOLD_PCT  = 85;
+    const BILLING_ALARM_USD           = 25;
+    const COST_ANOMALY_USD            = 10;
+    const HC_FAILURE_THRESHOLD        = 3;
+    const HC_REQUEST_INTERVAL_SECS    = 30;
+
     // ── S3 backup bucket ──────────────────────────────────────────────────────
     const backupBucket = new s3.Bucket(this, 'UnifiBackups', {
       bucketName: `unifi-backups-${this.account}`,
@@ -215,27 +222,24 @@ export class UnifiStack extends cdk.Stack {
       resources: [instanceRole.roleArn],
     }));
 
-    const entryPath = path.join(__dirname, '../lambda/handlers/index.ts');
+    const handlersDir = path.join(__dirname, '../lambda/handlers');
     const commonFnProps = {
       runtime: lambda.Runtime.NODEJS_20_X,
       role: lambdaRole,
       memorySize: 256,
-      entry: entryPath,
     };
 
     // ── Lambda functions (esbuild bundling, no Docker required) ───────────────
     const handlerFn = new NodejsFunction(this, 'Handler', {
       ...commonFnProps,
+      entry: path.join(handlersDir, 'health.ts'),
       handler: 'checkHealth',
       timeout: cdk.Duration.seconds(30),
-      environment: {
-        LAUNCH_TEMPLATE_ID: launchTemplate.launchTemplateId!,
-        EIP_ALLOCATION_ID: eipAllocationId,
-      },
     });
 
     const rotatorFn = new NodejsFunction(this, 'RotatorHandler', {
       ...commonFnProps,
+      entry: path.join(handlersDir, 'rotation.ts'),
       handler: 'startRotation',
       timeout: cdk.Duration.seconds(60),
       environment: {
@@ -246,26 +250,29 @@ export class UnifiStack extends cdk.Stack {
 
     const cutoverFn = new NodejsFunction(this, 'CutoverHandler', {
       ...commonFnProps,
+      entry: path.join(handlersDir, 'cutover.ts'),
       handler: 'performCutover',
       timeout: cdk.Duration.seconds(60),
     });
 
     const cleanupFn = new NodejsFunction(this, 'CleanupHandler', {
       ...commonFnProps,
+      entry: path.join(handlersDir, 'cutover.ts'),
       handler: 'cleanup',
       timeout: cdk.Duration.seconds(30),
     });
 
     const triggerFn = new NodejsFunction(this, 'TriggerHandler', {
       ...commonFnProps,
+      entry: path.join(handlersDir, 'trigger.ts'),
       handler: 'triggerInitialCutover',
       timeout: cdk.Duration.seconds(30),
     });
 
-    // scheduledRotationCheckFn and backupCheckFn env vars that depend on stateMachineArn
-    // are added via addEnvironment() after stateMachineArn is defined below
+    // STATE_MACHINE_ARN added via addEnvironment() after stateMachineArn is defined below
     const scheduledRotationFn = new NodejsFunction(this, 'ScheduledRotationHandler', {
       ...commonFnProps,
+      entry: path.join(handlersDir, 'rotation.ts'),
       handler: 'scheduledRotationCheck',
       timeout: cdk.Duration.seconds(60),
       environment: {
@@ -276,6 +283,7 @@ export class UnifiStack extends cdk.Stack {
 
     const backupCheckFn = new NodejsFunction(this, 'BackupCheckHandler', {
       ...commonFnProps,
+      entry: path.join(handlersDir, 'backup.ts'),
       handler: 'checkBackupFreshness',
       timeout: cdk.Duration.seconds(30),
       environment: {
@@ -347,7 +355,7 @@ export class UnifiStack extends cdk.Stack {
 
     const stateMachine = new sfn.StateMachine(this, 'CutoverStateMachine', {
       stateMachineName,
-      definition,
+      definitionBody: sfn.DefinitionBody.fromChainable(definition),
       timeout: cdk.Duration.hours(2),
       stateMachineType: sfn.StateMachineType.STANDARD,
       logs: {
@@ -427,11 +435,11 @@ export class UnifiStack extends cdk.Stack {
         statistic: 'Average',
         period: cdk.Duration.minutes(5),
       }),
-      threshold: 80,
+      threshold: DISK_ALARM_THRESHOLD_PCT,
       evaluationPeriods: 2,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      alarmDescription: 'Unifi controller disk usage on / exceeded 80%',
+      alarmDescription: `Unifi controller disk usage on / exceeded ${DISK_ALARM_THRESHOLD_PCT}%`,
       alarmName: 'unifi-disk-usage',
     });
     diskAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
@@ -444,8 +452,8 @@ export class UnifiStack extends cdk.Stack {
         fullyQualifiedDomainName: domain,
         port: 443,
         resourcePath: '/',
-        requestInterval: 30,
-        failureThreshold: 3,
+        requestInterval: HC_REQUEST_INTERVAL_SECS,
+        failureThreshold: HC_FAILURE_THRESHOLD,
         enableSni: true,
       },
       healthCheckTags: [{ key: 'Name', value: 'unifi-controller' }],
@@ -461,7 +469,7 @@ export class UnifiStack extends cdk.Stack {
         period: cdk.Duration.minutes(1),
       }),
       threshold: 1,
-      evaluationPeriods: 3,
+      evaluationPeriods: HC_FAILURE_THRESHOLD,
       comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.BREACHING,
       alarmDescription: `${domain} is failing Route 53 health checks`,
@@ -479,11 +487,11 @@ export class UnifiStack extends cdk.Stack {
         statistic: 'Average',
         period: cdk.Duration.minutes(5),
       }),
-      threshold: 85,
+      threshold: MEMORY_ALARM_THRESHOLD_PCT,
       evaluationPeriods: 2,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      alarmDescription: 'Unifi controller memory usage exceeded 85%',
+      alarmDescription: `Unifi controller memory usage exceeded ${MEMORY_ALARM_THRESHOLD_PCT}%`,
       alarmName: 'unifi-memory-usage',
     });
     memAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
@@ -598,12 +606,12 @@ export class UnifiStack extends cdk.Stack {
         statistic: 'Maximum',
         period: cdk.Duration.hours(6),
       }),
-      threshold: 25,
+      threshold: BILLING_ALARM_USD,
       evaluationPeriods: 1,
       comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
       treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
       alarmName: 'unifi-monthly-cost',
-      alarmDescription: 'Estimated monthly AWS charges exceeded $25',
+      alarmDescription: `Estimated monthly AWS charges exceeded $${BILLING_ALARM_USD}`,
     });
     billingAlarm.addAlarmAction(new cloudwatchActions.SnsAction(alertTopic));
 
@@ -625,7 +633,7 @@ export class UnifiStack extends cdk.Stack {
       subscriptionName: 'unifi-cost-alerts',
       monitorArnList: [anomalyMonitor.attrMonitorArn],
       subscribers: [{ address: alertTopic.topicArn, type: 'SNS' }],
-      threshold: 10,
+      threshold: COST_ANOMALY_USD,
       frequency: 'IMMEDIATE',
     });
 
