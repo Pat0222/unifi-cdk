@@ -70,8 +70,8 @@ export async function checkHealth(event: { instanceId: string }): Promise<{ heal
   const publicIp = await getInstancePublicIp(instanceId);
 
   await httpCheck(`http://${publicIp}:8080/inform`);
-  await httpCheck(`https://${publicIp}:8443`);
-  await checkNotSetupWizard(`https://${publicIp}:8443`);
+  await httpCheck(`https://${publicIp}:443`);
+  await checkNotSetupWizard(`https://${publicIp}:443`);
 
   return { healthy: true };
 }
