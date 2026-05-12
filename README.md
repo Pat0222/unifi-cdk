@@ -2,6 +2,71 @@
 
 A CDK TypeScript project that runs a self-hosted [UniFi Network Application](https://hub.docker.com/r/linuxserver/unifi-network-application) on AWS EC2 with fully automated instance rotation, backup/restore, SSL certificate management, and observability.
 
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph Clients
+        D["UniFi Devices\n(switches / APs)"]
+        B["Web Browser"]
+    end
+
+    subgraph Networking
+        R53["Route 53\nyour-domain.com"]
+        EIP["Elastic IP\n(fixed)"]
+    end
+
+    subgraph EC2["EC2 t3.small (AL2023)"]
+        Nginx["nginx :443 / :80"]
+        UniFi["UniFi App :8080"]
+        Mongo["MongoDB 4.4"]
+        CWA["CloudWatch Agent"]
+    end
+
+    subgraph Storage
+        S3["S3\nbackups + SSL cert"]
+        SM["Secrets Manager\nMongoDB · API key"]
+    end
+
+    subgraph Rotation["Instance Rotation"]
+        EB_R["EventBridge\nnew AMI · weekly"]
+        L_Rot["Lambda: rotator"]
+        SFN["Step Functions\ncutover state machine"]
+        L_HC["Lambda: health check"]
+        L_CO["Lambda: cutover"]
+    end
+
+    subgraph Observability
+        EB_O["EventBridge\nhourly"]
+        L_BK["Lambda: backup check"]
+        L_NM["Lambda: network metrics"]
+        CW["CloudWatch\nalarms + dashboard"]
+        R53_HC["Route 53\nhealth check"]
+        SNS["SNS → Email"]
+    end
+
+    subgraph CICD["CI / CD"]
+        GH["GitHub Actions\ncdk deploy on push to main"]
+    end
+
+    D -->|"inform :8080"| EIP
+    B --> R53 --> EIP
+    EIP --> Nginx --> UniFi <--> Mongo
+    UniFi -->|autobackup| S3
+    SM -->|credentials| UniFi
+
+    EB_R --> L_Rot --> SFN
+    SFN --> L_HC -->|"pass"| L_CO -->|"reassign EIP"| EIP
+    SFN -->|success / failure| SNS
+
+    CWA -->|"disk · mem · logs"| CW
+    EB_O --> L_BK & L_NM --> CW
+    CW --> SNS
+    R53_HC --> SNS
+
+    GH -->|"infrastructure updates"| EC2
+```
+
 ## What it does
 
 ### The basic setup
@@ -55,7 +120,7 @@ Alerts (via SNS email) fire when:
 - Instance rotation succeeds or fails
 - Disk usage exceeds 80%
 - Memory usage exceeds 85%
-- `nomscorp.com` fails Route 53 health checks for 3 consecutive minutes
+- Your domain fails Route 53 health checks for 3 consecutive minutes
 - No backup in S3 newer than 25 hours
 - Estimated monthly AWS cost exceeds $25
 - AWS Cost Anomaly Detection flags an unusual spend spike

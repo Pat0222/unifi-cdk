@@ -14,7 +14,7 @@ new UnifiStack(app, 'UnifiStack', {
   hostedZoneId: app.node.tryGetContext('hostedZoneId'),
   existingInstanceId: app.node.tryGetContext('existingInstanceId'),
   instanceType: app.node.tryGetContext('instanceType') ?? 't3.small',
-  domain: app.node.tryGetContext('domain') ?? 'nomscorp.com',
+  domain: app.node.tryGetContext('domain'),
   adminEmail: app.node.tryGetContext('adminEmail'),
   vpcId: app.node.tryGetContext('vpcId'),
   eipPublicIp: app.node.tryGetContext('eipPublicIp'),
