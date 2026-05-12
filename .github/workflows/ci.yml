@@ -67,4 +67,15 @@ jobs:
           aws-region: us-east-1
 
       - name: Deploy
-        run: npx cdk deploy --require-approval never
+        run: |
+          get() { aws ssm get-parameter --name "/unifi-cdk/$1" --query 'Parameter.Value' --output text; }
+          npx cdk deploy --require-approval never \
+            --context eipAllocationId=$(get eipAllocationId) \
+            --context hostedZoneId=$(get hostedZoneId) \
+            --context existingInstanceId=$(get existingInstanceId) \
+            --context instanceType=$(get instanceType) \
+            --context region=$(get region) \
+            --context domain=$(get domain) \
+            --context adminEmail=$(get adminEmail) \
+            --context vpcId=$(get vpcId) \
+            --context eipPublicIp=$(get eipPublicIp)
