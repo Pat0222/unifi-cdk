@@ -16,11 +16,11 @@
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.1045.0",
-    "@aws-sdk/client-ec2": "^3.0.0",
+    "@aws-sdk/client-ec2": "^3.1045.0",
     "@aws-sdk/client-s3": "^3.1045.0",
     "@aws-sdk/client-secrets-manager": "^3.1045.0",
-    "@aws-sdk/client-sfn": "^3.0.0",
-    "@aws-sdk/client-ssm": "^3.0.0",
+    "@aws-sdk/client-sfn": "^3.1045.0",
+    "@aws-sdk/client-ssm": "^3.1045.0",
     "aws-cdk-lib": "2.x",
     "constructs": "^10.0.0"
   }
