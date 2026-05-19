@@ -12,7 +12,7 @@
     "aws-cdk": "2.x",
     "esbuild": "^0.28.0",
     "ts-node": "^10.9.2",
-    "typescript": "~5.7.2"
+    "typescript": "~6.0.3"
   },
   "dependencies": {
     "@aws-sdk/client-cloudwatch": "^3.1049.0",
