@@ -15,3 +15,15 @@ updates:
       aws-sdk:
         patterns:
           - "@aws-sdk/*"
+      dev-tools:
+        patterns:
+          - "typescript"
+          - "ts-node"
+          - "esbuild"
+          - "@types/*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday

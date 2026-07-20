@@ -12,8 +12,27 @@ jobs:
     runs-on: ubuntu-latest
     if: github.actor == 'dependabot[bot]'
     steps:
-      - name: Enable auto-merge
-        run: gh pr merge --auto --squash "$PR_URL"
+      - name: Wait for CI to pass
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for i in $(seq 1 20); do
+            result=$(gh pr checks "$PR_URL" --json name,state \
+              --jq '.[] | select(.name == "Type check & synth") | .state' 2>/dev/null || echo "")
+            case "$result" in
+              SUCCESS)   echo "CI passed"; break ;;
+              FAILURE|ERROR|CANCELLED|TIMED_OUT)
+                         echo "CI failed — not merging"; exit 1 ;;
+              *)         echo "Attempt $i/20: ${result:-pending}, retrying in 30s..."; sleep 30 ;;
+            esac
+          done
+          if [ "$result" != "SUCCESS" ]; then
+            echo "Timed out waiting for CI"; exit 1
+          fi
+
+      - name: Merge PR
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge --squash "$PR_URL"
