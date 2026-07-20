@@ -36,7 +36,7 @@ export function createRotation(scope: Construct, deps: RotationDeps): RotationRe
     resultPath: '$.healthResult',
   });
   checkHealthTask.addRetry({
-    errors: ['HealthCheckFailed', 'Lambda.ServiceException'],
+    errors: ['HealthCheckFailed', 'Lambda.ServiceException', 'Lambda.AWSLambdaException', 'Lambda.TooManyRequestsException'],
     interval: cdk.Duration.minutes(2),
     maxAttempts: 30,
     backoffRate: 1.0,
@@ -50,6 +50,12 @@ export function createRotation(scope: Construct, deps: RotationDeps): RotationRe
       eipAllocationId: sfn.JsonPath.stringAt('$.eipAllocationId'),
     }),
     resultPath: '$.cutoverResult',
+  });
+  cutoverTask.addRetry({
+    errors: ['Lambda.ServiceException', 'Lambda.AWSLambdaException', 'Lambda.TooManyRequestsException'],
+    interval: cdk.Duration.seconds(30),
+    maxAttempts: 3,
+    backoffRate: 2.0,
   });
 
   const failState = new sfn.Fail(scope, 'CutoverFailed', {
@@ -65,11 +71,7 @@ export function createRotation(scope: Construct, deps: RotationDeps): RotationRe
   });
   cleanupTask.next(failState);
 
-  const definition = new sfn.Wait(scope, 'WaitForBoot', {
-    time: sfn.WaitTime.duration(cdk.Duration.minutes(5)),
-  })
-    .next(checkHealthTask)
-    .next(cutoverTask);
+  const definition = checkHealthTask.next(cutoverTask);
 
   checkHealthTask.addCatch(cleanupTask, {
     errors: ['States.ALL'],

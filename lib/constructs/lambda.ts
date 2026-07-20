@@ -39,7 +39,7 @@ export function createFunctions(scope: Construct, deps: FunctionsDeps): Function
     ...commonFnProps,
     entry: path.join(handlersDir, 'health.ts'),
     handler: 'checkHealth',
-    timeout: cdk.Duration.seconds(30),
+    timeout: cdk.Duration.seconds(90),
   });
 
   const rotatorFn = new NodejsFunction(scope, 'RotatorHandler', {
@@ -71,7 +71,7 @@ export function createFunctions(scope: Construct, deps: FunctionsDeps): Function
     ...commonFnProps,
     entry: path.join(handlersDir, 'trigger.ts'),
     handler: 'triggerInitialCutover',
-    timeout: cdk.Duration.seconds(30),
+    timeout: cdk.Duration.seconds(60),
   });
 
   // STATE_MACHINE_ARN added by createRotation after the state machine is defined
