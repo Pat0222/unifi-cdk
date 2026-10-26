@@ -18,6 +18,8 @@ export function createStorage(scope: Construct): StorageResources {
     encryption: s3.BucketEncryption.S3_MANAGED,
     lifecycleRules: [{
       id: 'expire-old-backups',
+      // Only backups — the cached TLS cert under letsencrypt/ must not expire.
+      prefix: 'backups/',
       expiration: cdk.Duration.days(30),
       noncurrentVersionExpiration: cdk.Duration.days(7),
     }],

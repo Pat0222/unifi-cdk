@@ -11,7 +11,11 @@ API_KEY_SECRET_ARN="${API_KEY_SECRET_ARN}"
 
 # ── System setup ─────────────────────────────────────────────────────────────
 dnf update -y
-dnf install -y docker python3-pip nginx aws-cli jq amazon-cloudwatch-agent
+dnf install -y docker python3-pip nginx aws-cli jq amazon-cloudwatch-agent cronie
+
+# AL2023 doesn't ship cron — without crond the hourly backup sync and daily
+# cert renewal below never run.
+systemctl enable --now crond
 
 # 2GB swap — t3.small has 2GB RAM and MongoDB + Unifi JVM can exhaust it
 fallocate -l 2G /swapfile
@@ -84,6 +88,19 @@ pip3 install certbot certbot-dns-route53
 # Restore cached cert from S3 first (avoids Let's Encrypt rate limits on instance rotation)
 mkdir -p /etc/letsencrypt
 aws s3 sync "s3://${BACKUP_BUCKET}/letsencrypt/" /etc/letsencrypt/ --exact-timestamps 2>/dev/null || true
+
+# S3 stores live/ symlinks as plain files, and certbot refuses to renew unless
+# live/*.pem are symlinks into archive/. Re-point them at the newest archive version.
+LIVE_DIR="/etc/letsencrypt/live/${DOMAIN}"
+ARCHIVE_DIR="/etc/letsencrypt/archive/${DOMAIN}"
+if [ -d "${ARCHIVE_DIR}" ] && [ -d "${LIVE_DIR}" ]; then
+  LATEST_N=$(ls "${ARCHIVE_DIR}"/cert*.pem 2>/dev/null | sed -E 's/.*cert([0-9]+)\.pem/\1/' | sort -n | tail -1)
+  if [ -n "${LATEST_N}" ]; then
+    for f in cert chain fullchain privkey; do
+      ln -sfn "../../archive/${DOMAIN}/${f}${LATEST_N}.pem" "${LIVE_DIR}/${f}.pem"
+    done
+  fi
+fi
 
 CERT_FILE="/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
 if [ -f "${CERT_FILE}" ] && openssl x509 -checkend 86400 -noout -in "${CERT_FILE}" 2>/dev/null; then
