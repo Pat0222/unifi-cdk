@@ -6,6 +6,10 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    ignore:
+      # ts-node doesn't support TypeScript 7 yet — remove once it does.
+      - dependency-name: typescript
+        versions: [">=7.0.0"]
     groups:
       aws-cdk:
         patterns:
