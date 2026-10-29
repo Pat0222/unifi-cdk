@@ -245,6 +245,19 @@ fi
 
 # ── Start containers ──────────────────────────────────────────────────────────
 cd /opt/unifi
+# Docker Hub throttles pulls (toomanyrequests) — retry with backoff rather than
+# letting set -e abort the whole boot.
+for attempt in 1 2 3 4 5 6; do
+  if docker compose pull; then
+    break
+  fi
+  if [ "${attempt}" -eq 6 ]; then
+    echo "ERROR: docker compose pull failed after ${attempt} attempts"
+    exit 1
+  fi
+  echo "WARNING: image pull failed (attempt ${attempt}) — retrying in $((attempt * 30))s"
+  sleep $((attempt * 30))
+done
 docker compose up -d
 
 # If a backup was downloaded, restore it via the Unifi setup wizard API
