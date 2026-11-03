@@ -319,15 +319,21 @@ if [ -f /opt/unifi/backup/restore.unf ]; then
           -d "{\"cmd\":\"restore\",\"backup_id\":\"${BACKUP_ID}\"}" \
           --max-time 30 \
           -w "%{http_code}" \
-          -o /tmp/restore_response.txt 2>/dev/null || echo "000")
+          -o /tmp/restore_response.txt 2>/dev/null) || true
+        RESTORE_HTTP=${RESTORE_HTTP:-000}
         echo "Restore trigger — HTTP: ${RESTORE_HTTP}"
         echo "Restore response: $(cat /tmp/restore_response.txt 2>/dev/null)"
 
-        if [ "${RESTORE_HTTP}" = "200" ]; then
-          echo "Restore triggered — waiting for controller to restart..."
+        # Unifi often restarts to apply the restore before answering, which
+        # drops the connection (HTTP 000). That usually means it worked, so wait
+        # for the restart and then check the result.
+        RESTORE_APPLIED=false
+        if [ "${RESTORE_HTTP}" = "200" ] || [ "${RESTORE_HTTP}" = "000" ]; then
+          [ "${RESTORE_HTTP}" = "000" ] && echo "Restore request was cut off — controller is likely restarting to apply it"
+          echo "Waiting for controller to restart..."
           sleep 30
           for i in $(seq 1 30); do
-            HTTP_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 "https://localhost:8443" 2>/dev/null || echo "000")
+            HTTP_CODE=$(curl -sk -o /dev/null -w "%{http_code}" --max-time 5 "https://localhost:8443" 2>/dev/null) || true
             if [ "${HTTP_CODE}" = "200" ] || [ "${HTTP_CODE}" = "302" ]; then
               echo "Controller is back up (HTTP ${HTTP_CODE})"
               break
@@ -336,6 +342,19 @@ if [ -f /opt/unifi/backup/restore.unf ]; then
             sleep 10
           done
 
+          # Same check as the health check Lambda: a restored controller sends
+          # visitors to the login page, a fresh one to the setup wizard.
+          LANDING=$(curl -skL -o /dev/null -w "%{url_effective}" --max-time 15 "https://localhost:8443/" 2>/dev/null) || true
+          echo "Controller landing page: ${LANDING:-unknown}"
+          case "${LANDING}" in
+            *"/setup"*|*"/wizard"*) echo "WARNING: Controller is still in the setup wizard — restore did not apply" ;;
+            *) RESTORE_APPLIED=true; echo "Restore applied" ;;
+          esac
+        else
+          echo "WARNING: Restore trigger failed (HTTP ${RESTORE_HTTP}) — instance will start fresh"
+        fi
+
+        if [ "${RESTORE_APPLIED}" = "true" ]; then
           # Force all devices to re-provision immediately so they come online faster
           echo "Force-provisioning devices across all sites..."
           API_KEY=$(aws secretsmanager get-secret-value --secret-id "${API_KEY_SECRET_ARN}" --query 'SecretString' --output text 2>/dev/null || echo "")
@@ -352,8 +371,6 @@ if [ -f /opt/unifi/backup/restore.unf ]; then
           else
             echo "WARNING: Could not retrieve API key — skipping force-provision"
           fi
-        else
-          echo "WARNING: Restore trigger failed — instance will start fresh"
         fi
       else
         echo "WARNING: Could not parse backup_id from upload response — skipping restore"
