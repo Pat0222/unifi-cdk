@@ -5,21 +5,33 @@ Receives syslog from your UniFi gateway and devices on UDP (default port
 While the internet is down, logs wait on disk under `/data` and upload when
 the connection returns.
 
+There's no AWS access key. The add-on signs with a certificate in Home
+Assistant's `ssl` folder, and IAM Roles Anywhere exchanges it for one-hour
+credentials.
+
 ## Options
 
 | Option | What to enter |
 |---|---|
 | `bucket` | The `LogBucketName` output of the UnifiStack CloudFormation stack |
 | `region` | The `LogRegion` output (for example `us-east-1`) |
-| `aws_access_key_id` | Access key ID for the `unifi-log-shipper` IAM user |
-| `aws_secret_access_key` | Its secret access key |
+| `trust_anchor_arn` | The `LogShipperTrustAnchorArn` output |
+| `profile_arn` | The `LogShipperProfileArn` output |
+| `role_arn` | The `LogShipperRoleArn` output |
+| `certificate` | Certificate file name in the `ssl` folder (default `unifi-log-shipper.crt`) |
+| `private_key` | Private key file name in the `ssl` folder (default `unifi-log-shipper.key`) |
 | `syslog_port` | UDP port to listen on. Use the same port in UniFi's syslog setting. |
 
-Full setup steps, including the UniFi syslog setting, are in the "Log archive"
-section of the repository README.
+Full setup steps, including creating the certificate and the UniFi syslog
+setting, are in the "Log archive" section of the repository README.
 
 ## Checking it works
 
-On the **Log** tab, look for `Successfully uploaded object` lines. Upload
-errors show as `[error] [output:s3:s3.0]` lines; they're expected while the
-internet is down and stop once it's back.
+On the **Log** tab, look for:
+
+- `IAM Roles Anywhere: got temporary credentials` at startup
+- `Successfully uploaded object` lines, at least hourly
+
+Upload errors show as `[error] [output:s3:s3.0]` lines. They're expected
+while the internet is down and stop once it's back. The certificate's expiry
+date is logged at every start; renew it before then.

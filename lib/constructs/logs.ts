@@ -2,6 +2,7 @@ import * as cdk from 'aws-cdk-lib';
 import * as athena from 'aws-cdk-lib/aws-athena';
 import * as glue from 'aws-cdk-lib/aws-glue';
 import * as iam from 'aws-cdk-lib/aws-iam';
+import * as rolesanywhere from 'aws-cdk-lib/aws-rolesanywhere';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
 import * as fs from 'fs';
@@ -15,7 +16,9 @@ export interface LogArchiveDeps {
 
 export interface LogArchiveResources {
   logBucket: s3.Bucket;
-  piUser: iam.User;
+  shipperRole: iam.Role;
+  trustAnchor: rolesanywhere.CfnTrustAnchor;
+  shipperProfile: rolesanywhere.CfnProfile;
   workgroup: athena.CfnWorkGroup;
 }
 
@@ -25,6 +28,12 @@ const VIEW = 'log_events';
 const LOG_PREFIX = 'unifi/';
 const RESULTS_PREFIX = 'athena-results/';
 const ATHENA_DIR = path.join(__dirname, '../athena');
+
+// Public certificate of the CA created by scripts/pki.sh init. Its private
+// key stays on the operator's machine, never in the repo.
+const SHIPPER_CA_PEM = path.join(__dirname, '../pki/unifi-log-shipper-ca.pem');
+// Must match CLIENT_CN in scripts/pki.sh.
+const SHIPPER_CERT_CN = 'unifi-log-shipper';
 
 // Columns in each JSON line. `source` is a partition, so it isn't listed here.
 const LOG_COLUMNS = ['timestamp', 'host', 'hostname', 'program', 'severity', 'message', 'raw'];
@@ -82,15 +91,48 @@ export function createLogArchive(scope: Construct, deps: LogArchiveDeps): LogArc
     resources: [logBucket.arnForObjects(`${LOG_PREFIX}controller/*`)],
   }));
 
-  // Access keys are created by hand in the console, so no secret ever
-  // appears in the template or stack outputs.
-  const piUser = new iam.User(scope, 'LogShipperUser', {
-    userName: 'unifi-log-shipper',
+  // The Home Assistant add-on gets temporary credentials through IAM Roles
+  // Anywhere: it signs with a certificate from our own CA, so no long-lived
+  // AWS key exists anywhere.
+  const trustAnchor = new rolesanywhere.CfnTrustAnchor(scope, 'LogShipperTrustAnchor', {
+    name: 'unifi-log-shipper',
+    enabled: true,
+    source: {
+      sourceType: 'CERTIFICATE_BUNDLE',
+      sourceData: { x509CertificateData: fs.readFileSync(SHIPPER_CA_PEM, 'utf8') },
+    },
   });
-  piUser.addToPolicy(new iam.PolicyStatement({
+
+  const shipperRole = new iam.Role(scope, 'LogShipperRole', {
+    roleName: 'unifi-log-shipper',
+    description: 'Assumed by the Home Assistant log shipper through IAM Roles Anywhere',
+    maxSessionDuration: cdk.Duration.hours(1),
+    assumedBy: new iam.ServicePrincipal('rolesanywhere.amazonaws.com'),
+  });
+  // Only sessions from our trust anchor, for a certificate with our CN.
+  (shipperRole.node.defaultChild as iam.CfnRole).assumeRolePolicyDocument = {
+    Version: '2012-10-17',
+    Statement: [{
+      Effect: 'Allow',
+      Principal: { Service: 'rolesanywhere.amazonaws.com' },
+      Action: ['sts:AssumeRole', 'sts:TagSession', 'sts:SetSourceIdentity'],
+      Condition: {
+        ArnEquals: { 'aws:SourceArn': trustAnchor.attrTrustAnchorArn },
+        StringEquals: { 'aws:PrincipalTag/x509Subject/CN': SHIPPER_CERT_CN },
+      },
+    }],
+  };
+  shipperRole.addToPolicy(new iam.PolicyStatement({
     actions: ['s3:PutObject'],
     resources: [logBucket.arnForObjects(`${LOG_PREFIX}devices/*`)],
   }));
+
+  const shipperProfile = new rolesanywhere.CfnProfile(scope, 'LogShipperProfile', {
+    name: 'unifi-log-shipper',
+    enabled: true,
+    roleArns: [shipperRole.roleArn],
+    durationSeconds: 3600,
+  });
 
   // ── Glue table (partition projection, no crawler) ──────────────────────────
   const database = new glue.CfnDatabase(scope, 'LogDatabase', {
@@ -220,5 +262,5 @@ export function createLogArchive(scope: Construct, deps: LogArchiveDeps): LogArc
     named.node.addDependency(view);
   }
 
-  return { logBucket, piUser, workgroup };
+  return { logBucket, shipperRole, trustAnchor, shipperProfile, workgroup };
 }

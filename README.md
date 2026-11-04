@@ -85,7 +85,8 @@ UniFi controller (EC2) ── Fluent Bit tails server.log ─▶ s3://unifi-logs
 
 | Piece | Where |
 |---|---|
-| Bucket, Glue table and view, Athena workgroup, saved queries, IAM user | `lib/constructs/logs.ts` |
+| Bucket, Glue table and view, Athena workgroup, saved queries, Roles Anywhere trust anchor, profile and role | `lib/constructs/logs.ts` |
+| Certificate authority for the Pi | `scripts/pki.sh`, public certificate in `lib/pki/` |
 | Match patterns (what counts as WAN down, device disconnect, …) | `lib/athena/log-events-view.sql` |
 | Saved queries | `lib/athena/queries/*.sql` |
 | Controller Fluent Bit setup | `lib/scripts/fluent-bit/` |
@@ -102,31 +103,57 @@ A normal deploy creates everything. Two optional settings:
 npx cdk deploy --context logRetentionDays=730 --context athenaBytesScannedLimitGb=1
 ```
 
-Stack outputs give you `LogBucketName`, `LogRegion`, `LogShipperUserName` and `AthenaWorkgroupName`.
+Stack outputs give you `LogBucketName`, `LogRegion`, `LogShipperTrustAnchorArn`, `LogShipperProfileArn`, `LogShipperRoleArn` and `AthenaWorkgroupName`.
 
 Fluent Bit is installed on the controller when an instance boots, so controller logs start shipping after the next rotation. A deploy alone doesn't install it on the running instance.
 
-### Creating the Pi's access key
+### The Pi's credentials (IAM Roles Anywhere)
 
-CDK creates the `unifi-log-shipper` IAM user but no access key, so no secret ever appears in CloudFormation. The user can only `s3:PutObject` under `unifi/devices/`.
+The add-on has no AWS access key. It holds a certificate from your own small certificate authority, and IAM Roles Anywhere exchanges it for credentials that last one hour, for the `unifi-log-shipper` role. That role can only `s3:PutObject` under `unifi/devices/`, and its trust policy only accepts certificates from this CA with the name `unifi-log-shipper`.
 
-1. In the IAM console, open **Users → unifi-log-shipper → Security credentials**.
-2. Click **Create access key**, choose **Application running outside AWS**, and copy both values. The secret is shown only once.
+`scripts/pki.sh` manages the CA. Private keys stay in `~/Documents/unifi-pki/` (set `PKI_DIR` to change it), outside the repo.
 
-To rotate the key later, create a second key, update the add-on, then deactivate and delete the old one.
+- **`scripts/pki.sh init`** creates the CA once (valid 10 years) and writes its public certificate to `lib/pki/unifi-log-shipper-ca.pem`. CDK registers that file as the trust anchor, so commit it and deploy.
+- **`scripts/pki.sh issue`** creates or renews the Pi's certificate (valid 1 year): `unifi-log-shipper.crt` and `unifi-log-shipper.key`.
 
-**IAM Roles Anywhere** could replace this long-lived key with short-lived credentials from an X.509 certificate on the Pi. It needs a certificate authority (your own, or AWS Private CA at about $400/month) and AWS's signing helper inside the add-on. For one device that can only write logs, the access key is the simpler trade-off. It isn't implemented here.
+Keep `ca.key` private and backed up: anyone with it can issue certificates the role trusts. If it's lost, run `init` again (after moving the old files aside), deploy, and issue a new Pi certificate.
+
+**Yearly renewal:** run `scripts/pki.sh issue`, copy the two new files over the old ones in the Pi's `ssl` folder, and restart the add-on. The add-on logs the certificate's expiry date each time it starts.
+
+**If the Pi or its SD card is lost:** disable the trust anchor (IAM console → Roles Anywhere → Trust anchors → `unifi-log-shipper` → Disable), which immediately stops every certificate from this CA. Then create a new CA with `init`, deploy, and issue a new certificate.
+
+Roles Anywhere itself is free. It only needs AWS Private CA (about $400/month) if you don't bring your own CA.
 
 ### Installing the Home Assistant add-on
 
 1. Give the Pi a fixed address: in UniFi, open the Pi's client page and set a **Fixed IP** (DHCP reservation).
-2. Copy the `collector/unifi_log_shipper` folder into the Pi's `/addons` folder, using either:
-   - the **Samba share** add-on: open `\\<pi-ip>\addons` and copy the folder in, or
-   - the **Terminal & SSH** add-on: `scp -r collector/unifi_log_shipper root@<pi-ip>:/addons/`
-3. In Home Assistant, go to **Settings → Add-ons → Add-on Store**, open the **⋮** menu and choose **Check for updates**. **UniFi Log Shipper** appears under **Local add-ons**.
-4. Install it. The Pi builds the image, which takes a few minutes.
-5. On the **Configuration** tab, fill in `bucket` and `region` from the stack outputs, the access key ID and secret, and leave `syslog_port` at 5514 unless you need another port.
-6. Start it, and keep **Start on boot** and **Watchdog** on. The **Log** tab should say it's listening on UDP 5514.
+2. Set up SSH to the Pi: in Home Assistant, install the **Terminal & SSH** add-on. On its **Configuration** tab, paste your public key under `authorized_keys`, set the **Network** port to `22` (blank means SSH is off), save, and start it.
+3. Copy the Pi's certificate and key into Home Assistant's `ssl` folder:
+   ```bash
+   scp -O ~/Documents/unifi-pki/unifi-log-shipper.{crt,key} root@<pi-ip>:/ssl/
+   ```
+4. Copy the add-on into the `addons` folder, so that `/addons/unifi_log_shipper/config.yaml` exists:
+   ```bash
+   scp -O -r collector/unifi_log_shipper root@<pi-ip>:/addons/
+   ```
+   `-O` uses the classic scp protocol, because the SSH add-on doesn't offer SFTP. If scp still fails, copy over a plain SSH session instead: `tar -C collector -czf - unifi_log_shipper | ssh root@<pi-ip> 'tar -xzf - -C /addons'`.
+5. In Home Assistant, go to **Settings → Add-ons → Add-on Store**, open the **⋮** menu and choose **Check for updates**. **UniFi Log Shipper** appears under **Local add-ons**.
+6. Install it. The Pi builds the image, which takes 5–15 minutes.
+7. On the **Configuration** tab, fill in the options from the stack outputs and save:
+
+   | Option | Stack output |
+   |---|---|
+   | `bucket` | `LogBucketName` |
+   | `region` | `LogRegion` |
+   | `trust_anchor_arn` | `LogShipperTrustAnchorArn` |
+   | `profile_arn` | `LogShipperProfileArn` |
+   | `role_arn` | `LogShipperRoleArn` |
+   | `certificate`, `private_key` | Leave the defaults unless you renamed the files |
+   | `syslog_port` | Leave at 5514 unless you need another port |
+
+8. Start it, and keep **Start on boot** and **Watchdog** on. The **Log** tab should show the certificate's expiry, `IAM Roles Anywhere: got temporary credentials`, and that it's listening on UDP 5514.
+
+The add-on needs a 64-bit system (aarch64 or amd64): AWS doesn't publish its credential helper for 32-bit ARM. Home Assistant OS is 64-bit by default on a Raspberry Pi 3, 4 and 5.
 
 Received lines are written to `/data` before upload, so they survive add-on restarts and reboots. While the internet is down, up to 64 MB of logs waits on the SD card. Past that, new lines are dropped. Each file is retried up to 10,000 times, then set aside and not retried. Fluent Bit doesn't document the retry interval. In a local test with a 1-minute upload interval it retried every 6 seconds, which suggests about once a minute with the real 60-minute setting, or roughly a week offline before files are set aside.
 
@@ -216,6 +243,7 @@ Expected volume is tens to hundreds of MB per month from devices, plus about 200
 | S3 PUT requests | ~1,500 uploads/month ≈ $0.01/month |
 | Athena | $5 per TB scanned, 10 MB minimum per query; a typical query costs a fraction of a cent |
 | Glue Data Catalog | Free at this size |
+| IAM Roles Anywhere | Free with your own CA |
 
 That's well under $1/month. If volume runs higher than expected, lowering device log levels in UniFi's syslog setting (turn off debug logs, raise the minimum severity) is the main lever.
 

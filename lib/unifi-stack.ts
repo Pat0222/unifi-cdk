@@ -86,9 +86,17 @@ export class UnifiStack extends cdk.Stack {
       value: this.region,
       description: 'Region of the log bucket (the add-on\'s "region" option)',
     });
-    new cdk.CfnOutput(this, 'LogShipperUserName', {
-      value: logs.piUser.userName,
-      description: 'IAM user for the Home Assistant log shipper. Create its access key in the console.',
+    new cdk.CfnOutput(this, 'LogShipperTrustAnchorArn', {
+      value: logs.trustAnchor.attrTrustAnchorArn,
+      description: 'IAM Roles Anywhere trust anchor (the add-on\'s "trust_anchor_arn" option)',
+    });
+    new cdk.CfnOutput(this, 'LogShipperProfileArn', {
+      value: logs.shipperProfile.attrProfileArn,
+      description: 'IAM Roles Anywhere profile (the add-on\'s "profile_arn" option)',
+    });
+    new cdk.CfnOutput(this, 'LogShipperRoleArn', {
+      value: logs.shipperRole.roleArn,
+      description: 'Role the add-on assumes (the add-on\'s "role_arn" option)',
     });
     new cdk.CfnOutput(this, 'AthenaWorkgroupName', {
       value: logs.workgroup.name,
