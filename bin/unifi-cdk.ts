@@ -18,4 +18,6 @@ new UnifiStack(app, 'UnifiStack', {
   vpcId: app.node.tryGetContext('vpcId'),
   eipPublicIp: app.node.tryGetContext('eipPublicIp'),
   forceRotation: app.node.tryGetContext('forceRotation') === 'true',
+  logRetentionDays: Number(app.node.tryGetContext('logRetentionDays') ?? 730),
+  athenaBytesScannedLimitGb: Number(app.node.tryGetContext('athenaBytesScannedLimitGb') ?? 1),
 });

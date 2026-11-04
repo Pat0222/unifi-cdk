@@ -1,0 +1,30 @@
+name: UniFi Log Shipper
+version: "1.0.0"
+slug: unifi_log_shipper
+description: Receives syslog from UniFi devices and archives it in S3, buffering to disk while the internet is down.
+url: https://github.com/Pat0222/unifi-cdk
+arch:
+  - aarch64
+  - amd64
+  - armv7
+startup: application
+boot: auto
+init: false
+# host_network so UDP syslog from the LAN reaches the add-on directly.
+host_network: true
+# Checks that Fluent Bit is running. It deliberately doesn't use the health
+# endpoint, which reports failed uploads and would restart the add-on during
+# every internet outage.
+watchdog: "http://[HOST]:[PORT:2020]/api/v1/uptime"
+options:
+  bucket: ""
+  region: us-east-1
+  aws_access_key_id: ""
+  aws_secret_access_key: ""
+  syslog_port: 5514
+schema:
+  bucket: str
+  region: str
+  aws_access_key_id: str
+  aws_secret_access_key: password
+  syslog_port: port

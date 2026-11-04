@@ -82,6 +82,13 @@ curl -fsSL "https://github.com/docker/compose/releases/latest/download/docker-co
   -o /usr/local/lib/docker/cli-plugins/docker-compose
 chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
 
+# ── Fluent Bit: ship server.log to S3 ────────────────────────────────────────
+# Best effort: a failure here must not stop the controller from booting.
+aws s3 cp "${FLUENT_BIT_ASSET}" /tmp/fluent-bit.zip --region "$REGION" --only-show-errors \
+  && python3 -m zipfile -e /tmp/fluent-bit.zip /opt/fluent-bit-setup \
+  && LOG_BUCKET="${LOG_BUCKET}" REGION="$REGION" DOMAIN="$DOMAIN" bash /opt/fluent-bit-setup/setup.sh \
+  || echo "WARNING: Fluent Bit setup failed — controller logs won't ship to S3"
+
 # ── Certbot + Route 53 DNS-01 challenge ──────────────────────────────────────
 pip3 install certbot certbot-dns-route53
 

@@ -8,6 +8,7 @@ import { createRotation } from './constructs/step_functions';
 import { createAlerting } from './constructs/alerts';
 import { createMonitoring } from './constructs/monitoring';
 import { createDns } from './constructs/dns';
+import { createLogArchive } from './constructs/logs';
 
 export interface UnifiStackProps extends cdk.StackProps {
   eipAllocationId: string;
@@ -19,6 +20,10 @@ export interface UnifiStackProps extends cdk.StackProps {
   vpcId: string;
   eipPublicIp: string;
   forceRotation?: boolean;
+  /** Days to keep archived logs (default 730). */
+  logRetentionDays?: number;
+  /** Per-query Athena scan limit in GB (default 1). */
+  athenaBytesScannedLimitGb?: number;
 }
 
 export class UnifiStack extends cdk.Stack {
@@ -29,7 +34,14 @@ export class UnifiStack extends cdk.Stack {
 
     const storage = createStorage(this);
     const { instanceRole, lambdaRole } = createIam(this, { ...storage, hostedZoneId });
-    const { launchTemplate } = createCompute(this, { instanceRole, ...storage, domain, adminEmail, vpcId, instanceType: props.instanceType });
+    const logs = createLogArchive(this, {
+      instanceRole,
+      retentionDays: props.logRetentionDays ?? 730,
+      bytesScannedLimitGb: props.athenaBytesScannedLimitGb ?? 1,
+    });
+    const { launchTemplate } = createCompute(this, {
+      instanceRole, ...storage, logBucket: logs.logBucket, domain, adminEmail, vpcId, instanceType: props.instanceType,
+    });
     const fns = createFunctions(this, {
       lambdaRole,
       launchTemplateId: launchTemplate.launchTemplateId!,
@@ -64,6 +76,23 @@ export class UnifiStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'LaunchTemplateId', {
       value: launchTemplate.launchTemplateId!,
       description: 'Launch template used for future AMI rotations',
+    });
+
+    new cdk.CfnOutput(this, 'LogBucketName', {
+      value: logs.logBucket.bucketName,
+      description: 'S3 bucket for archived UniFi logs',
+    });
+    new cdk.CfnOutput(this, 'LogRegion', {
+      value: this.region,
+      description: 'Region of the log bucket (the add-on\'s "region" option)',
+    });
+    new cdk.CfnOutput(this, 'LogShipperUserName', {
+      value: logs.piUser.userName,
+      description: 'IAM user for the Home Assistant log shipper. Create its access key in the console.',
+    });
+    new cdk.CfnOutput(this, 'AthenaWorkgroupName', {
+      value: logs.workgroup.name,
+      description: 'Athena workgroup holding the saved log queries',
     });
 
     // Suppress unused variable warning — stateMachine referenced only for dependency declaration in step_functions.ts
